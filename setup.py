@@ -11,6 +11,5 @@ setup(name='gym_lol',
       package_data={'': ['assets/*.xml']},
       zip_safe=False,
       install_requires=['gym>=0.2.3', 'pyautogui', 'pytesseract', 'keyboard'],
-      dependency_links=['git+https://github.com/tambetm/minecraft-py.git#egg=minecraft_py-0.0.2',
-                        'http://www.pygame.org/ftp/pygame-1.9.1release.tar.gz#egg=pygame-1.9.1release']
+      dependency_links=[]
 )
