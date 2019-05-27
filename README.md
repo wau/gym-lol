@@ -2,7 +2,7 @@
 <p align="center">
    <img src="./resources/map.png" width="400" height="400" />
    <br>
-   <a href="https://gitter.im/StylishThemes/GitHub-Dark">
+   <a href="https://docs.python.org/3/whatsnew/3.7.html">
       <img src="https://img.shields.io/badge/python-3.7+-blue.svg" alt="Gitter">
    </a>
    <a href="https://opensource.org/licenses/MIT">
