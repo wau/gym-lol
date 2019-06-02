@@ -8,5 +8,13 @@ register(
     entry_point='gym_lol.envs:LeagueEnv',
     timestep_limit=1000,
     reward_threshold=1.0,
-    nondeterministic = True,
+    nondeterministic=True,
+)
+
+register(
+    id='LeagueRemote-v0',
+    entry_point='gym_lol.envs:LeageEnvRemote',
+    timestep_limit=1000,
+    reward_threshold=1.0,
+    nondeterministic=True,
 )

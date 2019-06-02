@@ -112,7 +112,7 @@ class LeagueEnv(gym.Env):
 
         info = dict()
 
-        return images, reward, episode_over, info
+        return image, reward, episode_over, info
 
     def _reset(self): 
         """
