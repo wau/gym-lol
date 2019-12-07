@@ -1,63 +1,83 @@
-import os, subprocess, time, signal
+import win32gui
+import win32con, win32ui
+import win32api
+import config
+import pyautogui
 import gym
 from gym import error, spaces
 from gym import utils
-from gym.utils import seeding
-import pyautogui
+import pygame
 import numpy as np
 import keyboard
+import time
+import os
+import cv2
+import pytesseract
+from dataclasses import dataclass
 from threading import Thread, Lock
-from flask import Flask, request, jsonify
+import subprocess
+from utilz import utils_chroma
 
-try:
-    import pytesseract
-except ImportError as e:
-    raise error.DependencyNotInstalled("{}. (HINT: you must install pytesseract on your machine to use this feature.)'".format(e))
+#store key press with timestamp
+@dataclass
+class ActionKey:
+    key: chr
+    time: int
 
-try:
-    import win32gui
-    import win32con
-    import win32ui
-except ImportError as e:
-    raise error.DependencyNotInstalled("{}. (HINT: you must be running on a Windows machine.)'".format(e))
-
-ALLOWED_ACTIONS = ['Q','W','E','T','D','F','R'] # where R is right click
-
+colors =	{
+  "fuschia": (255, 0, 128),  # Transparency color
+  "dark_red": (100, 0, 0),
+  "bright_green": (0,230,0)
+}
 
 
-import logging
-logger = logging.getLogger(__name__) 
 
+ACTIONS = ['q', 'w', 'e', 'r', 'd', 'f']
+COOLDOWN = []
+ 
 class LeagueEnv(gym.Env):
 
-    def __init__(self, game='sr', frameskip=(2, 5), repeat_action_probability=0.):
-        """Frameskip should be either a tuple (indicating a random range to
-        choose from, with the top value exclude), or an int."""
+    
+    def __init__(self, username, password, champion, gamemode, position, ban,
+             menu_res=[1080,1920], obs_resolution=[720,1280],
+             recordObservations=None, recordRewards=None,
+             recordCommands=None, recordMP4=None):
+
+
+
+        self.username = username
+        self.password = password
+        self.champion = champion
+        self.gamemode = gamemode
+        self.position = position
+        self.ban = ban
+        self.chroma = utils_chroma.KeyboardChroma()
+        self.chroma.startup_animation()
+
+        self._setup_env()
+
         self.sv = ScreenCapture()        
         self.sv.GetHWND('League of Legends (TM) Client')
         self.bounds = self.sv.getScreenBounds()
         self.screen = None
-    
-    def init(self, client_pool=None, start_minecraft=None,
-             continuous_discrete=True, add_noop_command=None,
-             max_retries=90, retry_sleep=10, step_sleep=0.100, skip_steps=0, 
-             recordDestination=None, obs_resolution=[1024,786],
-             recordObservations=None, recordRewards=None,
-             recordCommands=None, recordMP4=None):
+
+           
+
         self.res_x = obs_resolution[0] # returned resolution, not necessarily game res
         self.res_y = obs_resolution[1]
-        self._key_thread()
-        self.max_retries = max_retries
-        self.retry_sleep = retry_sleep
-        self.step_sleep = step_sleep
-        self.skip_steps = skip_steps
-        self.continuous_discrete = continuous_discrete
-        self.add_noop_command = add_noop_command
+
+        self._key_thread() #add all keys 
+
         self.sv.Start()
 
-        #initialize mouse
-        currentMouseX, currentMouseY = pyautogui.position() 
-        self.current_action = [0,0,0,0,0,0,0,currentMouseX-self.bounds[0], currentMouseY-self.bounds[2]]
+
+        self.action_space = spaces.Box(0,1, shape=(9,))
+        self.observation_space = spaces.Box(
+                low=0, high=255, shape=(self.res_y, self.res_x, 3))
+
+        #initialize action array
+        self.current_action = [0,0,0,0,0,0,0]
+
 
 
         self.episode_over = False
@@ -67,8 +87,107 @@ class LeagueEnv(gym.Env):
 
         self.last_image = np.zeros((self.res_y, self.res_x, 3), dtype=np.uint8)
 
+    def _setup_env(self):
+        #TODO: autolaunch app and get into game
+            #launch app on rest call
+        gamemodes = {
+            'blind': 725,
+            'draft': 825,
+            'solo': 870,
+            'flex': 925
+        }
+        positions = {
+            'jungle': (625,620),
+            'mid': (850,570)
+        }
 
-    def _step(self, machine_action):
+        subprocess.Popen(['C:\\Riot Games\\League of Legends\\LeagueClient.exe'])
+        time.sleep(8)
+
+        self.sv = ScreenCapture()        
+        self.sv.GetHWND('League of Legends')
+        l, r, t, b = self.sv.getScreenBounds()
+
+        pyautogui.click(x=l+1740,y=t+290) #username
+        pyautogui.typewrite(self.username)
+        pyautogui.click(x=l+1740,y=t+380) #password
+        pyautogui.typewrite(self.password)
+        pyautogui.click(x=l+1740,y=t+840) #click on login
+
+        time.sleep(30)
+
+        pyautogui.click(x=l+150,y=t+50) #click on play
+        time.sleep(4)
+        pyautogui.click(x=l+150,y=t+gamemodes.get(self.gamemode)) #click on gamemode
+        pyautogui.click(x=l+800,y=t+1030) #play
+        time.sleep(4)
+
+        for i in range(2):
+            pyautogui.click(x=l+725+i*125,y=t+720)
+            pyautogui.click(x=l+positions.get(self.position[i])[0],
+                y=t+positions.get(self.position[i])[1])
+
+        time.sleep(2)
+
+        #autoqueue
+        self.sv.Start()
+        img = []
+        img.append(cv2.cvtColor(self.sv.GetScreen(), cv2.COLOR_BGR2GRAY))
+        pyautogui.click(x=l+800,y=t+1030)
+        entered_match = False
+        while entered_match is False:
+            img.append(cv2.cvtColor(self.sv.GetScreen(), cv2.COLOR_BGR2GRAY))
+            err = np.sum((img[0].astype("float") - img[1].astype("float"))**2)
+            err /= float(img[0].shape[0] * img[0].shape[1])
+            if err >= 500:
+                time.sleep(2)
+                pyautogui.click(x=l+950,y=t+850)
+                entered_match = True
+            del img[1]
+
+        time.sleep(12)
+        #enter match & select champ
+        pyautogui.click(x=l+570,y=t+250)
+        pyautogui.typewrite(self.champion)
+        pyautogui.click(x=l+950,y=t+920)
+
+        #ban
+        pyautogui.click(x=0,y=0)
+        pyautogui.typewrite(self.ban)
+        pyautogui.click(x=0,y=0)
+
+        #finalize
+        pyautogui.click(x=0,y=0)
+
+        self.sv.Stop()
+        self.sv = None
+
+        pygame.init()
+        pygame.font.init()
+        pygame.mixer.init()
+        self.screen = pygame.display.set_mode((self.res_x, self.res_y), pygame.NOFRAME)
+        self.screen.fill(colors.get('fuschia')) #transparent background
+        # Set window transparency color
+        hwnd = pygame.display.get_wm_info()["window"]
+        gamewindow = win32gui.FindWindow(None, "League of Legends (TM) Client")
+        posX, posY, width, height = win32gui.GetWindowPlacement(gamewindow)[4]
+
+        windowStyles = win32con.WS_EX_LAYERED | win32con.WS_EX_TRANSPARENT
+
+
+        win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE,
+                            win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE) | win32con.WS_EX_LAYERED)
+        win32gui.SetLayeredWindowAttributes(hwnd, win32api.RGB(*colors.get("fuschia")), 0, win32con.LWA_COLORKEY)
+        win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, posX,posY, 0,0, win32con.SWP_NOSIZE)
+
+
+
+        
+        
+
+
+
+    def step(self, action):
         """
 
         Parameters
@@ -101,59 +220,58 @@ class LeagueEnv(gym.Env):
 
 
         # take the last frame from world state
-        image = self._get_video_frame()
+        obs = [self._get_video_frame(), self._get_mouse()]
 
         # append it to the list of prveious frames 
-    
 
-        reward = self._get_reward(self.current_action, machine_action, 12) #also resets
+        reward = self._get_reward(self.current_action, action, 12) #also resets
+        self._refresh_hud(0)
 
-        episode_over = self.episode_over # not needed
 
-        info = dict()
+        return obs, reward, True, {}
 
-        return image, reward, episode_over, info
-
-    def _reset(self): 
+    def reset(self): 
         """
         Resets the state of the environment and returns an initial observation.
         # Returns
             observation (object): The initial observation of the space. Initial reward is assumed to be 0.
         """
-        return 
+        self._refresh_hud(0)
+        obs = [self._get_video_frame(), self._get_mouse()]
+        return obs
 
-    def shutdown():
+    def shutdown(self):
         """ Request a server shutdown - currently used by the integration tests to repeatedly create and destroy fresh copies of the server running in a separate thread"""
-        f = request.environ.get('werkzeug.server.shutdown')
-        f()
+  
         return 'Server shutting down'
 
     def _take_action(self, keys):
         # length 9 
         send_keys = []
         for i in range(7):
-            if(keys[i] >= .5):
-                send_keys+=ALLOWED_ACTIONS[i]
-        self._move_mouse(keys[7], keys[8])
+            if(keys[i] >= .8):
+                #send_keys+=ALLOWED_ACTIONS[i]
+                #remove temp for testing
+                pass
         pyautogui.press(send_keys)
-        print('{0}:{1} Keys:{2}'.format(keys[7],keys[8], send_keys))
+        print('Keys: {2}'.format(send_keys))
         return
 
 
     def _get_video_frame(self):
         #record screen
-        img = self.sv.GetScreen() 
-        if self.res_x!= np.size(img,0):
-            img = cv2.resize(img, (self.res_x,self.res_y), interpolation=cv2.INTER_CUBIC) #res is tuple
-        return img
+        self.img = self.sv.GetScreen() 
+        if self.res_x != np.size(img,0):
+            self.img = cv2.resize(img, (self.res_x,self.res_y), interpolation=cv2.INTER_CUBIC) #res is tuple
+        return self.img
 
+    def _get_mouse(self):
+        return pyautogui.position()
 
     def _get_current_action(self):
-        currentMouseX, currentMouseY = pyautogui.position()
         action = self.current_action 
-        self.current_action = [0,0,0,0,0,0,0,currentMouseX-self.bounds[0], currentMouseY-self.bounds[2]]
+        self.current_action = [0,0,0,0,0,0]
         return action
-
 
     def _close(self):
         self.sv.Stop()
@@ -167,10 +285,9 @@ class LeagueEnv(gym.Env):
         total_error = 0
         array_length = len(human_keys)
         for i in array_length:
-            if i < 7: #weight key mse properly
-                total_error+= (human_keys[i] - predicted_keys[i])**2
-            else: # lower mouse mse based on specified key bias
-                total_error+= ((human_keys[i] - predicted_keys[i])/key_bias)**2
+            total_error+= (human_keys[i] - predicted_keys[i])**2
+
+        self.current_action = self.current_action*0.5 #decay reward for late key press
         return total_error/array_length
 
 
@@ -179,15 +296,27 @@ class LeagueEnv(gym.Env):
         return
 
     def _key_thread(self):
-        for i in range(len(ALLOWED_ACTIONS)):
-            keyboard.add_hotkey(ALLOWED_ACTIONS[i], self._add_key, [i], suppress=False)
+        for i in range(len(ACTIONS)):
+            keyboard.add_hotkey(ACTIONS[i], self._add_key, [i], suppress=False)
         return
+
+    def _meta_thread(self):
+        #TODO: collect metadata related to health and mana from image
+        thread = Thread(target=self._update_meta, args=("I'ma", "thread"))
+        thread.start()
+
+    def _update_meta(self):
+        #TODO: collect metadata related to health and mana from image
+        
+        self.img 
 
     def _add_key(self, keynum):
         self.current_action[keynum] = 1
         return
 
-
+    def _refresh_hud(self, img):
+        self.screen.blit(self.emotes[img],(0,0))
+        pygame.display.update()
 
 
 ############################################################
@@ -301,127 +430,3 @@ class ScreenCapture:
     def getScreenBounds(self):
         return [self.l, self.r, self.t, self.b]
 
-############################################################
-#  Input Record Windows 
-############################################################
-
-class InputRecord():
-
-    def __init__(self, save_path):
-        self.recording_array = []
-        self.image_array = []
-        self.recording = False
-        self.sv = ScreenCapture()
-        self.save_path = save_path
-        self.recording_session = len(os.listdir(save_path))
-        self.incremental_array = [0] * 9
-        return
-
-
-    def start(self):
-        # thrd = 
-        return
-
-    def record(self):
-        start_time = time.time()
-        self.recording = True
-
-
-        self.sv.GetHWND('League of Legends (TM) Client')
-        bounds = self.sv.getScreenBounds()
-        self.sv.Start()
-        #100ms array
-        keyboard.add_hotkey('Q', self.addKey, [0], suppress=False)
-        keyboard.add_hotkey('W', self.addKey, [1], suppress=False)
-        keyboard.add_hotkey('E', self.addKey, [2], suppress=False)
-        keyboard.add_hotkey('T', self.addKey, [3], suppress=False)
-        keyboard.add_hotkey('D', self.addKey, [4], suppress=False)
-        keyboard.add_hotkey('F', self.addKey, [5], suppress=False)
-        keyboard.add_hotkey('R', self.addKey, [6], suppress=False) # mouse click substitute
-        # 7 mouse x
-        # 8 mouse y
-
-        # start at 100ms
-        while self.recording == True:
-            if(time.time() - start_time >= 0.100): #ms
-                start_time = time.time()
-                currentMouseX, currentMouseY = pyautogui.position() 
-                self.incremental_array = [0,0,0,0,0,0,0, currentMouseX-bounds[0], currentMouseY-bounds[2]]    
-                #record screen too
-                img = self.sv.GetScreen() #lol using wrong method
-                self.image_array.append(img)                      
-                self.recording_array.append(self.incremental_array)
-                #reset
-                img = None   
-        return
-
-    def addKey(self, keynum):
-        self.incremental_array[keynum] = 1
-        return
-
-    def stop_recording(self):
-        print('Stopping recording session....')
-        self.sv.Stop()
-        self.recording = False
-        keyboard.unhook_all()
-        #save both arrays as h5py?
-        with h5py.File(self.save_path+'/recording_{0}.h5'.format(self.recording_session), 'w') as hf:
-            hf.create_dataset("Inputs",  data=self.recording_array)
-            hf.create_dataset("Images",  data=self.image_array)
-        print(self.recording_array)
-        print(len(self.image_array))
-        return
-
-
-class Controller:
-
-    def __init__(self, model_path):
-        self.sv = utils.ScreenCapture()
-        self.sv.GetHWND('League of Legends (TM) Client')
-        self.bounds = self.sv.getScreenBounds()  
-        self.translated_keys = ['Q','W','E','T','D','F','R']  
-        self.recording = False  
-        self.model = agentmodel.AgentModel()
-        self.model.load_model(model_path)   
-        return
-
-    def begin_eval(self, duration):
-        #capture screen
-        self.recording = True
-        self.sv.Start()
-
-        image_queue = np.zeros(shape=(4, 382, 502, 3))
-        start_time = time.time()
-        begin_time = start_time
-        while self.recording == True:
-             if(time.time() - start_time >= .4): #100 ms delay?
-                start_time = time.time()
-                img = self.sv.GetScreen() #add capture to front of image queue and drop last image
-                #eval 
-                img = cv2.resize(img, dsize=(502, 382),interpolation=cv2.INTER_CUBIC) 
-                image_queue = np.insert(image_queue, 0, img, axis=0) 
-                image_queue = np.delete(image_queue, -1, axis=0) #remove last entry
-                keys = self.model.eval(image_queue[np.newaxis,:])
-                keys = np.append(keys[0], keys[1], axis=1)
-                keys = keys[0]
-                self.SendKeys(keys)
-                if(duration <= time.time()-begin_time):
-                    self.recording = False
-                    return
-        return
-    
-    def SendKeys(self, keys):
-        # length 9 
-        send_keys = []
-        for i in range(7):
-            if(keys[i] >= .5):
-                send_keys+=self.translated_keys[i]
-        self.moveMouse(keys[7], keys[8])
-        print('{0}:{1}'.format(keys[7],keys[8]))
-        pyautogui.press(send_keys)
-        print(send_keys)
-        return
-    
-    def moveMouse(self, x, y):
-        pyautogui.moveTo(x+self.bounds[0], y+self.bounds[2])
-        return
